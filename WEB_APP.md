@@ -61,6 +61,17 @@ Caddy serves the public HTTPS URL. The web container remains bound to
 all reads and changes go to Genesys Cloud. A Docker host, domain, and Genesys
 Cloud configuration are needed before it can have a live URL.
 
+If your Docker server already runs Traefik on ports 80 and 443, attach the web
+container to its `traefik_default` network instead of starting Caddy:
+
+```bash
+docker compose -f compose.yaml -f compose.traefik.yaml up -d --build
+```
+
+This overlay uses the existing `websecure` entrypoint and `letsencrypt`
+certificate resolver. Change those label values if your Traefik instance uses
+other names.
+
 ## What the web app does
 
 - Lists accessible tables and loads their rows, including multi-page results.
