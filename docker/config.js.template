@@ -1,0 +1,6 @@
+window.APP_CONFIG = Object.freeze({
+  clientId: "${GENESYS_CLIENT_ID}",
+  region: "${GENESYS_REGION}",
+  adminGroupId: "${GENESYS_ADMIN_GROUP_ID}",
+  userGroupId: "${GENESYS_USER_GROUP_ID}"
+});

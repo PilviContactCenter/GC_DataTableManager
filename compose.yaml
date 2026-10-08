@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      GENESYS_CLIENT_ID: ${GENESYS_CLIENT_ID:?Set GENESYS_CLIENT_ID in .env}
+      GENESYS_REGION: ${GENESYS_REGION:?Set GENESYS_REGION in .env}
+      GENESYS_ADMIN_GROUP_ID: ${GENESYS_ADMIN_GROUP_ID:?Set GENESYS_ADMIN_GROUP_ID in .env}
+      GENESYS_USER_GROUP_ID: ${GENESYS_USER_GROUP_ID:?Set GENESYS_USER_GROUP_ID in .env}
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

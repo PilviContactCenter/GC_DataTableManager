@@ -1,5 +1,15 @@
 # Genesys Cloud Data Table Manager
 
+## Embedded web application
+
+The new [Docker web app](WEB_APP.md) runs inside a Genesys Cloud Client Application.
+Users sign in through Genesys Cloud, and the browser calls the Data Table API
+directly. It uses two Genesys Cloud groups for Admin and User access and does
+not need a local SQL database. The Python application described below remains
+available as the original local version.
+
+## Original local Flask application
+
 This is a simple tool I built to help manage Genesys Cloud Data Tables. It makes it easier to edit rows, manage who can see or change what, and keep track of changes.
 
 ## What it does

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>Genesys Cloud sign-in</title></head>
+<body style="font-family:system-ui,sans-serif;padding:2rem;text-align:center">
+  <p id="status">Completing Genesys Cloud sign-in…</p>
+  <script>
+    const message = { name: 'gc_auth_popup', type: 'message', hash: location.hash, search: location.search };
+    if (window.opener) {
+      window.opener.postMessage(message, location.origin);
+      document.getElementById('status').textContent = 'Sign-in complete. You can close this window.';
+      setTimeout(() => window.close(), 1000);
+    } else {
+      document.getElementById('status').textContent = 'Open Data Table Manager to sign in.';
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+.git
+.env
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+*.log
+*.csv
+instance/
+templates/
+tests/
