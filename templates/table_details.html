@@ -203,6 +203,7 @@
 
 <script>
     const schema = {{ schema|tojson }};
+    const requiredColumns = {{ required_columns|tojson }};
     const userRole = "{{ user_role }}";
     const colPerms = {{ columns_perms|tojson }};
 
@@ -279,7 +280,8 @@
             
             const label = document.createElement('label');
             label.className = "block text-sm font-medium leading-6 text-gray-900";
-            label.innerText = colProps.title || colName;
+            label.innerText = (colProps.title || colName) + (requiredColumns.includes(colName) && colName !== 'key' ? ' *' : '');
+            label.htmlFor = 'edit_' + colName;
             div.appendChild(label);
             
             let input;
@@ -289,6 +291,7 @@
                 input = document.createElement('input');
                 input.type = 'checkbox';
                 input.name = colName;
+                input.id = 'edit_' + colName;
                 input.className = "h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-600";
                 if (val) input.checked = true;
                 
@@ -299,6 +302,8 @@
             } else {
                 input = document.createElement('input');
                 input.name = colName;
+                input.id = 'edit_' + colName;
+                input.required = requiredColumns.includes(colName) && colName !== 'key';
                 input.className = "block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6";
                 input.value = val !== undefined ? val : '';
                 
@@ -332,9 +337,11 @@
     }
     
     function confirmUpdate() {
+        const form = document.getElementById('editForm');
+        if (!form.reportValidity()) return;
         if (confirm("Are you sure you want to update this row?")) {
             showLoader();
-            document.getElementById('editForm').submit();
+            form.submit();
         }
     }
 
@@ -344,7 +351,7 @@
         
         fieldsContainer.innerHTML = '';
         
-        const keys = Object.keys(schema);
+        const keys = ['key', ...Object.keys(schema).filter(name => name !== 'key')];
         
         keys.forEach(colName => {
             const colProps = schema[colName] || {};
@@ -353,7 +360,8 @@
             
             const label = document.createElement('label');
             label.className = "block text-sm font-medium leading-6 text-gray-900";
-            label.innerText = colProps.title || colName;
+            label.innerText = (colProps.title || colName) + (requiredColumns.includes(colName) || colName === 'key' ? ' *' : '');
+            label.htmlFor = 'create_' + colName;
             div.appendChild(label);
             
             let input;
@@ -362,6 +370,7 @@
                 input = document.createElement('input');
                 input.type = 'checkbox';
                 input.name = colName;
+                input.id = 'create_' + colName;
                 input.className = "h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-600";
                 
                 const wrapper = document.createElement('div');
@@ -371,6 +380,8 @@
             } else {
                 input = document.createElement('input');
                 input.name = colName;
+                input.id = 'create_' + colName;
+                input.required = requiredColumns.includes(colName) || colName === 'key';
                 input.className = "block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6";
                 
                 if (colName === 'key') {

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
+from row_validation import parse_row_form
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev_secret_key_12345')
@@ -278,6 +279,7 @@ def view_table(table_id):
     # Fetch schema to know data types
     full_schema = list_tables.get_table_schema(table_id)
     schema_props = full_schema.get('properties', {}) if full_schema else {}
+    required_columns = (full_schema.get('required') or []) if full_schema else []
 
     if role == 'admin':
         columns_perms = {} 
@@ -321,7 +323,8 @@ def view_table(table_id):
                                    can_update=can_update,
                                    columns_perms=columns_perms,
                                    user_role=role,
-                                   schema=schema_props)
+                                   schema=schema_props,
+                                   required_columns=required_columns)
         else:
             return render_template('table_details.html', 
                                    rows=[], 
@@ -330,7 +333,8 @@ def view_table(table_id):
                                    user_role=role,
                                    can_update=can_update,
                                    columns_perms=columns_perms,
-                                   schema=schema_props)
+                                   schema=schema_props,
+                                   required_columns=required_columns)
     except Exception as e:
         return render_template('table_details.html', 
                                rows=[], 
@@ -338,7 +342,8 @@ def view_table(table_id):
                                user_role=role, 
                                can_update=can_update,
                                columns_perms=columns_perms,
-                               schema=schema_props)
+                               schema=schema_props,
+                               required_columns=required_columns)
 
 @app.route('/table/<table_id>/update', methods=['POST'])
 @login_required
@@ -371,6 +376,7 @@ def update_row(table_id):
     # Get Schema
     full_schema = list_tables.get_table_schema(table_id)
     properties = full_schema.get('properties', {}) if full_schema else {}
+    required = full_schema.get('required', []) if full_schema else []
     
     # Get Column Permissions if not admin
     col_perms = {}
@@ -386,40 +392,17 @@ def update_row(table_id):
         for cp in perm.column_permissions:
             col_perms[cp.column_name] = cp.access_level
         
-    updated_data = existing_row.copy()
-    
-    for col_name, col_props in properties.items():
-        # The 'key' column is the unique identifier and cannot be changed
-        if col_name == 'key':
-            continue
-
-        # Check permission
-        if role != 'admin':
-            access = col_perms.get(col_name, 'none')
-            if access != 'write':
-                continue # Skip updating this field, keep existing value
-                
-        col_type = col_props.get('type')
-        
-        if col_type == 'boolean':
-            # Checkbox: if present 'on', else False
-            is_checked = request.form.get(col_name) is not None
-            updated_data[col_name] = is_checked
-        else:
-            if col_name in request.form:
-                val = request.form.get(col_name)
-                if col_type == 'integer':
-                    try:
-                        updated_data[col_name] = int(val)
-                    except:
-                        updated_data[col_name] = 0
-                elif col_type == 'number':
-                     try:
-                        updated_data[col_name] = float(val)
-                     except:
-                        updated_data[col_name] = 0.0
-                else:
-                    updated_data[col_name] = val
+    writable_columns = None if role == 'admin' else {
+        name for name, access in col_perms.items() if access == 'write'
+    }
+    updated_data, errors = parse_row_form(
+        properties, request.form, existing=existing_row,
+        writable_columns=writable_columns, required=required,
+    )
+    if errors:
+        for error in errors:
+            flash(error, 'error')
+        return redirect(url_for('view_table', table_id=table_id))
                     
     try:
         list_tables.update_table_row(table_id, row_key, updated_data)
@@ -440,50 +423,22 @@ def create_row(table_id):
     # Get Schema to know types
     full_schema = list_tables.get_table_schema(table_id)
     properties = full_schema.get('properties', {}) if full_schema else {}
+    required = full_schema.get('required', []) if full_schema else []
     
-    new_row_data = {}
-    
-    # The 'key' is mandatory
-    row_key = request.form.get('key')
+    # The key is the immutable row identifier.
+    row_key = (request.form.get('key') or '').strip()
     if not row_key:
         flash('Row Key is required.', 'error')
         return redirect(url_for('view_table', table_id=table_id))
-        
+
+    new_row_data, errors = parse_row_form(
+        properties, request.form, required=required,
+    )
+    if errors:
+        for error in errors:
+            flash(error, 'error')
+        return redirect(url_for('view_table', table_id=table_id))
     new_row_data['key'] = row_key
-    
-    for col_name, col_props in properties.items():
-        if col_name == 'key':
-            continue
-            
-        col_type = col_props.get('type')
-        
-        if col_type == 'boolean':
-            # Checkbox
-            is_checked = request.form.get(col_name) is not None
-            new_row_data[col_name] = is_checked
-        else:
-            val = request.form.get(col_name)
-            if val: # Only add if value is present
-                if col_type == 'integer':
-                    try:
-                        new_row_data[col_name] = int(val)
-                    except:
-                        new_row_data[col_name] = 0
-                elif col_type == 'number':
-                     try:
-                        new_row_data[col_name] = float(val)
-                     except:
-                        new_row_data[col_name] = 0.0
-                else:
-                    new_row_data[col_name] = val
-            else:
-                # Handle defaults if needed, or send None/Default
-                if col_type == 'string':
-                    new_row_data[col_name] = ""
-                # For numbers, maybe 0? Or omit?
-                # Let's omit if empty for now, unless it's required.
-                # But Genesys might complain if required fields are missing.
-                # Let's assume empty string for strings.
                     
     try:
         list_tables.create_table_row(table_id, new_row_data)
