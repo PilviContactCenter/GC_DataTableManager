@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Data Table Manager</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/config.js"></script>
+  <script src="https://sdk-cdn.mypurecloud.com/javascript/264.0.0/purecloud-platform-client-v2.min.js" async></script>
+  <script type="module" src="/main.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">DT</span><div><strong>Data Table Manager</strong><small>Genesys Cloud</small></div></div>
+    <div class="top-actions">
+      <span id="regionLabel" class="region-label"></span>
+      <span id="roleBadge" class="badge" hidden></span>
+      <span id="userName" class="user-name"></span>
+      <button id="signOutButton" class="button button-quiet" hidden>Disconnect</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice" role="alert" hidden></div>
+
+  <section id="welcome" class="welcome">
+    <div class="welcome-card">
+      <span class="eyebrow">GENESYS CLOUD DATA TABLES</span>
+      <h1>Manage table data in one place.</h1>
+      <p>Sign in with your Genesys Cloud account to see the tables your role can access.</p>
+      <button id="signInButton" class="button button-primary">Sign in with Genesys Cloud</button>
+      <p id="welcomeHint" class="hint">Your Genesys Cloud permissions control every change.</p>
+    </div>
+  </section>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar" aria-label="Data tables">
+      <div class="sidebar-head"><div><span class="eyebrow">WORKSPACE</span><h2>Data tables</h2></div><button id="refreshTablesButton" class="icon-button" title="Refresh tables" aria-label="Refresh tables">↻</button></div>
+      <label class="search-label" for="tableSearch">Find a table</label>
+      <input id="tableSearch" class="input" type="search" placeholder="Search tables…">
+      <div id="tableList" class="table-list"></div>
+      <p id="tableCount" class="sidebar-foot"></p>
+    </aside>
+
+    <main class="content">
+      <div id="noTable" class="empty-state"><span class="empty-icon">▦</span><h2>Select a data table</h2><p>Choose a table from the list to view its rows.</p></div>
+      <section id="tableView" hidden>
+        <div class="table-heading"><div><span class="eyebrow">DATA TABLE</span><h1 id="tableTitle"></h1><p id="tableDescription"></p></div><div class="table-actions"><button id="refreshRowsButton" class="button button-secondary">Refresh</button><button id="exportButton" class="button button-secondary" hidden>Export JSON</button><button id="addRowButton" class="button button-primary" hidden>Add row</button></div></div>
+        <div class="table-tools"><div><strong id="rowCount">0 rows</strong><span id="tableHint" class="hint"></span></div><label><span class="sr-only">Search rows</span><input id="rowSearch" class="input" type="search" placeholder="Search rows…"></label></div>
+        <div id="rowTableWrap" class="row-table-wrap"><table id="rowTable"><thead></thead><tbody></tbody></table></div>
+        <p id="rowsEmpty" class="rows-empty" hidden>No rows match your search.</p>
+        <button id="loadMoreButton" class="button button-secondary load-more" hidden>Show more rows</button>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="rowDialog" class="row-dialog">
+    <form id="rowForm" novalidate>
+      <div class="dialog-heading"><div><span class="eyebrow">DATA TABLE ROW</span><h2 id="dialogTitle"></h2></div><button id="closeDialogButton" type="button" class="icon-button" aria-label="Close">×</button></div>
+      <div id="rowFields" class="row-fields"></div>
+      <p id="formError" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="cancelDialogButton" type="button" class="button button-secondary">Cancel</button><button id="saveRowButton" type="submit" class="button button-primary">Save row</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
