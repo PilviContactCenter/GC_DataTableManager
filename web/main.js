@@ -1,8 +1,14 @@
 import { roleFromGroups, columnsFor, parseRow } from './domain.js';
+import { AUDIT_PAGE_SIZE, auditQuery, auditRowKey, auditChanges } from './audit.js';
 
 const $ = id => document.getElementById(id);
 const config = window.APP_CONFIG || {};
-const state = { sdk: null, client: null, architect: null, role: null, tables: [], table: null, schema: null, rows: [], editRow: null, shown: 100, loadId: 0 };
+const state = {
+  sdk: null, client: null, architect: null, audits: null, users: null, role: null,
+  tables: [], table: null, schema: null, rows: [], editRow: null, shown: 100, loadId: 0,
+  auditEntries: [], auditPage: 0, auditPageCount: 0, auditTotal: 0, auditLoadId: 0,
+  actorNames: new Map(), actorLookupDenied: false
+};
 
 function notice(message, success = false) {
   const element = $('notice');
@@ -52,13 +58,15 @@ async function signIn() {
       state: crypto.randomUUID(),
       authPopupConfiguration: { usePopup: true, popupTimeout: 120000 }
     });
-    const user = await new state.sdk.UsersApi().getUsersMe({ expand: ['groups'] });
+    state.users = new state.sdk.UsersApi();
+    const user = await state.users.getUsersMe({ expand: ['groups'] });
     state.role = roleFromGroups(user.groups, config.adminGroupId, config.userGroupId);
     if (!state.role) {
       notice('Your Genesys account needs the Data Table Admin or Data Table User group.');
       return;
     }
     state.architect = new state.sdk.ArchitectApi();
+    if (state.role === 'admin') state.audits = new state.sdk.AuditApi();
     $('userName').textContent = user.name || user.email || '';
     $('roleBadge').textContent = state.role === 'admin' ? 'Admin' : 'User';
     $('roleBadge').hidden = false;
@@ -67,6 +75,7 @@ async function signIn() {
     $('workspace').hidden = false;
     $('addRowButton').hidden = state.role !== 'admin';
     $('exportButton').hidden = state.role !== 'admin';
+    $('historyButton').hidden = state.role !== 'admin';
     await loadTables();
   } catch (error) {
     notice(`Sign-in failed: ${errorMessage(error)}`);
@@ -124,6 +133,7 @@ function renderTables() {
 }
 
 function clearSelectedTable() {
+  closeAuditHistory();
   state.table = null;
   state.schema = null;
   state.rows = [];
@@ -134,6 +144,7 @@ function clearSelectedTable() {
 
 async function selectTable(table) {
   const loadId = ++state.loadId;
+  if (state.table?.id !== table.id) closeAuditHistory();
   state.table = table;
   state.rows = [];
   state.shown = 100;
@@ -154,6 +165,7 @@ async function selectTable(table) {
     state.rows = rows;
     $('tableHint').textContent = '';
     renderRows();
+    if (!$('auditPanel').hidden && state.role === 'admin') await loadAuditHistory(1);
   } catch (error) {
     if (loadId !== state.loadId) return;
     $('tableHint').textContent = 'Could not load rows';
@@ -212,6 +224,156 @@ function renderRows() {
   $('rowsEmpty').hidden = filtered.length > 0;
   $('loadMoreButton').hidden = filtered.length <= state.shown;
   $('loadMoreButton').textContent = `Show more rows (${filtered.length - state.shown} remaining)`;
+}
+
+function closeAuditHistory() {
+  state.auditLoadId++;
+  state.auditEntries = [];
+  state.auditPage = 0;
+  state.auditPageCount = 0;
+  state.auditTotal = 0;
+  $('auditPanel').hidden = true;
+  $('historyButton').setAttribute('aria-expanded', 'false');
+  $('auditList').replaceChildren();
+  $('auditStatus').textContent = '';
+  $('loadMoreAuditButton').hidden = true;
+}
+
+async function toggleAuditHistory() {
+  if (state.role !== 'admin' || !state.table) return;
+  if (!$('auditPanel').hidden) {
+    closeAuditHistory();
+    return;
+  }
+  $('auditPanel').hidden = false;
+  $('historyButton').setAttribute('aria-expanded', 'true');
+  await loadAuditHistory(1);
+}
+
+async function loadAuditHistory(pageNumber = 1) {
+  if (state.role !== 'admin' || !state.table || $('auditPanel').hidden) return;
+  const loadId = ++state.auditLoadId;
+  const tableId = state.table.id;
+  const button = pageNumber === 1 ? $('refreshAuditButton') : $('loadMoreAuditButton');
+  setBusy(button, true, 'Loading…');
+  $('auditStatus').textContent = 'Loading change history…';
+  try {
+    const query = auditQuery(tableId, Number($('auditRange').value), pageNumber);
+    const result = await state.audits.postAuditsQueryRealtime(query);
+    if (loadId !== state.auditLoadId || tableId !== state.table?.id) return;
+    state.auditEntries = pageNumber === 1 ? (result.entities || []) : [...state.auditEntries, ...(result.entities || [])];
+    state.auditPage = pageNumber;
+    state.auditPageCount = result.pageCount ?? Math.ceil((result.total ?? state.auditEntries.length) / AUDIT_PAGE_SIZE);
+    state.auditTotal = result.total ?? state.auditEntries.length;
+    renderAuditHistory();
+    void resolveAuditActors(loadId);
+  } catch (error) {
+    if (loadId === state.auditLoadId) $('auditStatus').textContent = `Could not load change history: ${errorMessage(error)}`;
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function auditActor(event) {
+  if (event.user?.name) return event.user.name;
+  if (event.user?.id) return state.actorNames.get(event.user.id) || `User ${event.user.id}`;
+  if (event.application) return event.application;
+  if (event.client?.id) return `OAuth client ${event.client.id}`;
+  return 'Genesys Cloud';
+}
+
+function renderAuditHistory() {
+  const list = $('auditList');
+  list.replaceChildren();
+  if (!state.auditEntries.length) {
+    $('auditStatus').textContent = 'No changes found for this table in the selected period.';
+  } else {
+    $('auditStatus').textContent = `Showing ${state.auditEntries.length} of ${state.auditTotal} events.`;
+  }
+  for (const event of state.auditEntries) {
+    const item = document.createElement('details');
+    item.className = 'audit-event';
+    const summary = document.createElement('summary');
+    const time = document.createElement('time');
+    time.className = 'audit-time';
+    const date = new Date(event.eventDate);
+    time.textContent = Number.isNaN(date.getTime()) ? (event.eventDate || 'Unknown time') : date.toLocaleString();
+    const action = document.createElement('strong');
+    action.textContent = `${event.action || 'Change'} ${event.entityType === 'Schema' ? 'table settings' : (event.entityType || 'item').toLowerCase()}`;
+    const target = document.createElement('span');
+    const rowKey = auditRowKey(event);
+    target.textContent = rowKey ? `Row: ${rowKey}` : '';
+    const actor = document.createElement('span');
+    actor.className = 'audit-actor';
+    if (event.user?.id) actor.dataset.userId = event.user.id;
+    actor.textContent = auditActor(event);
+    summary.append(time, action, target, actor);
+    if (event.status && event.status !== 'SUCCESS') {
+      const status = document.createElement('span');
+      status.className = 'audit-result';
+      status.textContent = event.status;
+      summary.append(status);
+    }
+    item.append(summary);
+
+    const changes = auditChanges(event);
+    if (changes.length) {
+      const wrap = document.createElement('div');
+      wrap.className = 'audit-changes-wrap';
+      const table = document.createElement('table');
+      table.className = 'audit-changes';
+      const head = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      for (const label of ['Field', 'Before', 'After']) {
+        const th = document.createElement('th');
+        th.textContent = label;
+        headRow.append(th);
+      }
+      head.append(headRow);
+      const body = document.createElement('tbody');
+      for (const change of changes) {
+        const row = document.createElement('tr');
+        for (const value of [change.field, change.before, change.after]) {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          row.append(cell);
+        }
+        body.append(row);
+      }
+      table.append(head, body);
+      wrap.append(table);
+      item.append(wrap);
+    } else {
+      const empty = document.createElement('p');
+      empty.className = 'audit-no-values';
+      empty.textContent = 'Genesys Cloud did not include field values for this event.';
+      item.append(empty);
+    }
+    list.append(item);
+  }
+  $('loadMoreAuditButton').hidden = state.auditPage >= state.auditPageCount;
+}
+
+async function resolveAuditActors(loadId) {
+  if (state.actorLookupDenied) return;
+  const ids = [...new Set(state.auditEntries.map(event => event.user?.id).filter(Boolean))];
+  for (const id of ids) {
+    if (state.actorNames.has(id)) continue;
+    try {
+      const user = await state.users.getUser(id);
+      state.actorNames.set(id, user.name || user.email || `User ${id}`);
+    } catch (error) {
+      if (error?.status === 403 || error?.statusCode === 403) {
+        state.actorLookupDenied = true;
+        break;
+      }
+      state.actorNames.set(id, `User ${id}`);
+    }
+    if (loadId !== state.auditLoadId) return;
+    for (const actor of $('auditList').querySelectorAll('.audit-actor[data-user-id]')) {
+      if (actor.dataset.userId === id) actor.textContent = state.actorNames.get(id);
+    }
+  }
 }
 
 function openRowDialog(row = null) {
@@ -320,6 +482,11 @@ function init() {
   $('tableSearch').addEventListener('input', renderTables);
   $('rowSearch').addEventListener('input', () => { state.shown = 100; renderRows(); });
   $('refreshRowsButton').addEventListener('click', () => state.table && selectTable(state.table));
+  $('historyButton').addEventListener('click', toggleAuditHistory);
+  $('closeAuditButton').addEventListener('click', closeAuditHistory);
+  $('refreshAuditButton').addEventListener('click', () => loadAuditHistory(1));
+  $('auditRange').addEventListener('change', () => loadAuditHistory(1));
+  $('loadMoreAuditButton').addEventListener('click', () => loadAuditHistory(state.auditPage + 1));
   $('addRowButton').addEventListener('click', () => openRowDialog());
   $('exportButton').addEventListener('click', exportRows);
   $('loadMoreButton').addEventListener('click', () => { state.shown += 100; renderRows(); });
