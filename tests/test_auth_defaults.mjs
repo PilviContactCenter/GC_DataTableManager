@@ -46,7 +46,7 @@ function appHarness(configOverrides = {}, sdk) {
   element('rowForm').querySelectorAll = () => element('rowFields').querySelectorAll();
   const window = { APP_CONFIG: { ...validConfig, ...configOverrides }, require: () => sdk };
   const context = vm.createContext({
-    ...domain, ...audit, window, URL, crypto: { randomUUID },
+    ...domain, ...audit, window, URL, structuredClone, crypto: { randomUUID },
     location: { href: 'https://app.example.com/' },
     document: { readyState: 'loading', addEventListener() {}, getElementById: element, createElement: () => new Element() }
   });
@@ -187,8 +187,16 @@ test('new-row inputs show schema defaults and submission preserves true, false, 
 test('edit inputs retain explicit empty, zero and false values instead of schema defaults', async () => {
   const app = rowHarness();
   let submitted;
-  app.state.architect = { async putFlowsDatatableRow(tableId, key, options) { submitted = { tableId, key, body: options.body }; } };
+  let fetched;
   const existing = { key: 'existing', title: '', empty: '', count: 0, rate: 0, enabled: false, disabled: false };
+  app.state.rows = [existing];
+  app.state.architect = {
+    async getFlowsDatatableRow(tableId, key, options) {
+      fetched = { tableId, key, options };
+      return structuredClone(existing);
+    },
+    async putFlowsDatatableRow(tableId, key, options) { submitted = { tableId, key, body: options.body }; }
+  };
   app.openRowDialog(existing);
   const fields = app.fields();
   assert.equal(fields.title.value, '');
@@ -196,6 +204,7 @@ test('edit inputs retain explicit empty, zero and false values instead of schema
   assert.equal(fields.rate.value, '0');
   assert.equal(fields.enabled.checked, false);
   await app.saveRow({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(JSON.stringify(fetched)), { tableId: 'table-id', key: 'existing', options: { showbrief: false } });
   assert.deepEqual(JSON.parse(JSON.stringify(submitted)), { tableId: 'table-id', key: 'existing', body: existing });
 });
 
