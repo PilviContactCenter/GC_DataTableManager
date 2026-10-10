@@ -717,9 +717,6 @@ async function saveRow(event) {
   try {
     if (state.role !== dialog.role) throw new Error('Your app role changed. Cancel and reopen this row.');
     if (dialog.row) {
-      const current = await state.architect.getFlowsDatatableRow(dialog.table.id, dialog.row.key, { showbrief: false });
-      if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
-      if (!sameRow(current, dialog.row)) throw new Error('This row changed since you opened it. Your draft has been kept. Cancel and refresh the table before editing again.');
       if (dialog.allowed) {
         const policy = await requestColumnAccess(dialog.table.id);
         if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
@@ -727,6 +724,11 @@ async function saveRow(event) {
           throw new Error('Column access changed since you opened this row. Your draft has been kept. Cancel and refresh column access before editing again.');
         }
       }
+      // Keep the row freshness read adjacent to the SDK write. Policy checks
+      // can take several requests; a row changed during them must be detected.
+      const current = await state.architect.getFlowsDatatableRow(dialog.table.id, dialog.row.key, { showbrief: false });
+      if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
+      if (!sameRow(current, dialog.row)) throw new Error('This row changed since you opened it. Your draft has been kept. Cancel and refresh the table before editing again.');
       if (state.role !== dialog.role) throw new Error('Your app role changed. Cancel and reopen this row.');
       await state.architect.putFlowsDatatableRow(dialog.table.id, dialog.row.key, { body: row });
     } else await state.architect.postFlowsDatatableRows(dialog.table.id, row);

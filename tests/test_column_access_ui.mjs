@@ -265,18 +265,43 @@ test('browser/live schema mismatch leaves User locked and prevents Admin confirm
   }
 });
 
-test('revocation while optimistic row read is pending is caught by the final policy read', async () => {
+test('revocation returned by a pending policy preflight prevents the final row read and PUT', async () => {
   const f = user();
   await f.selectTable(A);
   f.openRowDialog(f.state.rows[0]);
   const pending = deferred();
-  f.state.architect.getFlowsDatatableRow = () => pending.promise;
+  f.setFetch(() => pending.promise);
+  let rowReads = 0;
+  f.state.architect.getFlowsDatatableRow = async () => { rowReads++; return row; };
   const saving = f.saveRow(submit);
-  f.setPolicy({ revision: 2, editableColumns: [] });
-  pending.resolve(row);
+  pending.resolve(success(policy('A', { revision: 2, editableColumns: [] })));
   await saving;
+  assert.equal(rowReads, 0);
   assert.equal(f.writes.length, 0);
   assert.match(f.elements.get('formError').textContent, /Column access changed/);
+});
+
+test('row changed while policy preflight awaits is caught by the final row read and preserves the draft', async () => {
+  const f = user();
+  await f.selectTable(A);
+  f.openRowDialog(f.state.rows[0]);
+  input(f, 'value').value = 'My draft';
+  const pending = deferred();
+  f.setFetch(() => pending.promise);
+  let current = row, rowReads = 0;
+  f.state.architect.getFlowsDatatableRow = async () => { rowReads++; return current; };
+  const saving = f.saveRow(submit);
+  await tick();
+  assert.equal(rowReads, 0);
+  current = { ...row, locked: 'Another editor changed this' };
+  pending.resolve(success(policy()));
+  await saving;
+  assert.equal(rowReads, 1);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.elements.get('rowDialog').open, true);
+  assert.equal(input(f, 'value').value, 'My draft');
+  assert.match(f.elements.get('formError').textContent, /row changed/);
+  assert.equal(f.elements.get('saveRowButton').disabled, false);
 });
 
 test('failed User policy preflight keeps the draft and blocks SDK PUT', async () => {
