@@ -75,3 +75,21 @@ stored locally.
 
 The app does not keep a separate audit database or provide rollback. Use Genesys
 permissions and audit facilities for production governance.
+
+Before updating or deleting a row, the app reads its current value and rejects
+changes if another editor has modified it since it was loaded. The edit draft
+is retained. Genesys does not expose a conditional row version in the SDK used
+here, so a change between that read and the write can still race. Coordinate
+simultaneous edits when this distinction matters.
+
+## Verification
+
+Run the regression tests with Node.js:
+
+```bash
+node --test tests/*.mjs
+```
+
+The tests use mock API responses and deferred requests; they do not modify
+Genesys Cloud data. Live OAuth and permissions still depend on the configured
+Genesys organization.
