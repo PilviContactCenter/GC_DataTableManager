@@ -16,7 +16,9 @@ case "$GENESYS_REGION" in
         ;;
 esac
 
-if [ "$GENESYS_ADMIN_GROUP_ID" = "$GENESYS_USER_GROUP_ID" ]; then
+admin_group_id=$(printf '%s' "$GENESYS_ADMIN_GROUP_ID" | tr '[:upper:]' '[:lower:]')
+user_group_id=$(printf '%s' "$GENESYS_USER_GROUP_ID" | tr '[:upper:]' '[:lower:]')
+if [ "$admin_group_id" = "$user_group_id" ]; then
     echo 'Admin and user group IDs must be different.' >&2
     exit 1
 fi

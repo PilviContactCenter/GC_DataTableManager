@@ -38,7 +38,10 @@ function setBusy(element, busy, busyText = 'Working…') {
 }
 
 function hasConfig() {
-  return Boolean(config.clientId && config.adminGroupId && config.userGroupId && config.region);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return [config.clientId, config.adminGroupId, config.userGroupId].every(value => typeof value === 'string' && uuid.test(value))
+    && config.adminGroupId.toLowerCase() !== config.userGroupId.toLowerCase()
+    && typeof config.region === 'string' && /^[a-z0-9_]+$/.test(config.region);
 }
 
 async function signIn() {
@@ -46,19 +49,21 @@ async function signIn() {
   const button = $('signInButton');
   setBusy(button, true, 'Opening sign-in…');
   try {
-    if (!state.client) {
-      if (!window.require) throw new Error('Genesys SDK is still loading. Try again in a moment.');
-      state.sdk = window.require('platformClient');
-      state.client = state.sdk.ApiClient.instance;
-      const region = state.sdk.PureCloudRegionHosts[config.region];
-      if (!region) throw new Error(`Unknown Genesys region: ${config.region}`);
-      state.client.setEnvironment(region);
-    }
+    if (!hasConfig()) throw new Error('Set a valid Genesys OAuth client ID, region, and two different group IDs in Docker configuration.');
+    if (!state.sdk && !window.require) throw new Error('Genesys SDK is still loading. Try again in a moment.');
+    const sdk = state.sdk || window.require('platformClient');
+    const region = Object.hasOwn(sdk.PureCloudRegionHosts, config.region) && sdk.PureCloudRegionHosts[config.region];
+    if (!region) throw new Error(`Unknown Genesys region: ${config.region}`);
+    const client = state.client || sdk.ApiClient.instance;
+    client.setEnvironment(region);
+    state.sdk = sdk;
+    state.client = client;
     const redirectUri = new URL('/auth-popup.html', location.href).href;
+    const codeVerifier = client.generatePKCECodeVerifier(128);
     await state.client.loginPKCEGrant(config.clientId, redirectUri, {
       state: crypto.randomUUID(),
       authPopupConfiguration: { usePopup: true, popupTimeout: 120000 }
-    });
+    }, codeVerifier);
     state.users = new state.sdk.UsersApi();
     const user = await state.users.getUsersMe({ expand: ['groups'] });
     state.role = roleFromGroups(user.groups, config.adminGroupId, config.userGroupId);
@@ -470,6 +475,7 @@ function openRowDialog(row = null, context = tableContext()) {
   for (const name of names) {
     const definition = state.schema.properties?.[name] || {};
     const type = name === 'key' ? 'string' : definition.type || 'string';
+    const value = row ? row[name] : definition.default;
     const wrapper = document.createElement('div');
     wrapper.className = `field${type === 'boolean' ? ' checkbox' : ''}`;
     const label = document.createElement('label');
@@ -481,14 +487,14 @@ function openRowDialog(row = null, context = tableContext()) {
     label.htmlFor = input.id;
     if (type === 'boolean') {
       input.type = 'checkbox';
-      input.checked = Boolean(row?.[name]);
+      input.checked = Boolean(value);
       wrapper.append(input, label);
     } else {
       input.type = type === 'integer' || type === 'number' ? 'number' : 'text';
       if (type === 'number') input.step = 'any';
       if (type === 'integer') input.step = '1';
       input.className = 'input';
-      input.value = row?.[name] ?? '';
+      input.value = value ?? '';
       input.required = name === 'key' || Boolean(state.schema.required?.includes(name));
       if (name === 'key' && row) input.readOnly = true;
       wrapper.append(label, input);
