@@ -2,8 +2,7 @@
 
 This is the Docker web version of Data Table Manager. It is a static browser
 application that calls the Genesys Cloud API with the signed-in user's OAuth
-token. There is no application database or client secret. The original Flask
-application remains in the repository for local use.
+token. There is no application database or client secret.
 
 ## Genesys Cloud setup
 
@@ -15,7 +14,7 @@ application remains in the repository for local use.
    | Group | Suggested Architect permissions |
    | --- | --- |
    | Data Table User | Datatable View; Datatable Row View and Edit |
-   | Data Table Admin | Datatable View; Datatable Row View, Add, Edit, and Delete |
+   | Data Table Admin | Datatable View; Datatable Row View, Add, Edit, and Delete; Audits Audit View |
 
    Grant these permissions for the divisions containing the tables. The app
    checks group membership for its interface; Genesys Cloud checks API
@@ -24,7 +23,8 @@ application remains in the repository for local use.
 3. Create an OAuth client using **Code Authorization with PKCE**. Add
    `https://<your-domain>/auth-popup.html` as an authorized redirect URI. For
    local testing, also add `http://127.0.0.1:8080/auth-popup.html`. Use its
-   public client ID; do not put a client secret in this application.
+   public client ID; do not put a client secret in this application. Include
+   the `audits:readonly` OAuth scope for the Admin change history view.
 4. Create a **Client Application** integration in Genesys Cloud. Set its URL
    to `https://<your-domain>/`, select the two groups for visibility, and
    include `allow-popups` in its iframe sandbox options so the OAuth login
@@ -49,20 +49,9 @@ docker compose up -d --build
 
 Open `http://127.0.0.1:8080/` and use a matching local OAuth redirect URI.
 
-For a public HTTPS deployment, point the domain's DNS at your Docker server,
-open ports 80 and 443, then run:
-
-```bash
-docker compose -f compose.yaml -f compose.public.yaml up -d --build
-```
-
-Caddy serves the public HTTPS URL. The web container remains bound to
-`127.0.0.1:8080` on the Docker host. The app stores no table data locally;
-all reads and changes go to Genesys Cloud. A Docker host, domain, and Genesys
-Cloud configuration are needed before it can have a live URL.
-
-If your Docker server already runs Traefik on ports 80 and 443, attach the web
-container to its `traefik_default` network instead of starting Caddy:
+For a public HTTPS deployment with Traefik, point the domain's DNS at your
+Docker server. The Traefik instance must have a `traefik_default` network and
+serve ports 80 and 443. Then run:
 
 ```bash
 docker compose -f compose.yaml -f compose.traefik.yaml up -d --build
@@ -70,7 +59,9 @@ docker compose -f compose.yaml -f compose.traefik.yaml up -d --build
 
 This overlay uses the existing `websecure` entrypoint and `letsencrypt`
 certificate resolver. Change those label values if your Traefik instance uses
-other names.
+other names. The web container also remains bound to `127.0.0.1:8080` on the
+Docker host. All table reads and changes go to Genesys Cloud; no table data is
+stored locally.
 
 ## What the web app does
 
@@ -78,7 +69,27 @@ other names.
 - Searches tables and rows in the browser.
 - Lets User group members edit rows.
 - Lets Admin group members add, edit, delete, and export rows as JSON.
+- Lets Admin group members inspect real-time row and schema changes for the
+  selected table, including the actor and before/after values when provided by
+  Genesys Cloud. The real-time API covers up to the previous 14 days.
 
-The original Flask app's local column permissions, audit log, and rollback
-features are not part of this database-free version. Use Genesys permissions
-and audit facilities for production governance.
+The app does not keep a separate audit database or provide rollback. Use Genesys
+permissions and audit facilities for production governance.
+
+Before updating or deleting a row, the app reads its current value and rejects
+changes if another editor has modified it since it was loaded. The edit draft
+is retained. Genesys does not expose a conditional row version in the SDK used
+here, so a change between that read and the write can still race. Coordinate
+simultaneous edits when this distinction matters.
+
+## Verification
+
+Run the regression tests with Node.js:
+
+```bash
+node --test tests/*.mjs
+```
+
+The tests use mock API responses and deferred requests; they do not modify
+Genesys Cloud data. Live OAuth and permissions still depend on the configured
+Genesys organization.

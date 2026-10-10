@@ -1,0 +1,30 @@
+name: Verify application
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-and-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # https://github.com/actions/setup-node/releases/tag/v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Run browser regression tests
+        run: node --test tests/*.mjs
+      - name: Check shell syntax
+        run: bash -n tests/test_container.sh && sh -n docker/validate-config.sh
+      - name: Build and smoke test Docker container
+        run: bash tests/test_container.sh

@@ -45,7 +45,21 @@
     <main class="content">
       <div id="noTable" class="empty-state"><span class="empty-icon">▦</span><h2>Select a data table</h2><p>Choose a table from the list to view its rows.</p></div>
       <section id="tableView" hidden>
-        <div class="table-heading"><div><span class="eyebrow">DATA TABLE</span><h1 id="tableTitle"></h1><p id="tableDescription"></p></div><div class="table-actions"><button id="refreshRowsButton" class="button button-secondary">Refresh</button><button id="exportButton" class="button button-secondary" hidden>Export JSON</button><button id="addRowButton" class="button button-primary" hidden>Add row</button></div></div>
+        <div class="table-heading"><div><span class="eyebrow">DATA TABLE</span><h1 id="tableTitle"></h1><p id="tableDescription"></p></div><div class="table-actions"><button id="refreshRowsButton" class="button button-secondary">Refresh</button><button id="historyButton" class="button button-secondary" hidden>Change history</button><button id="exportButton" class="button button-secondary" hidden>Export JSON</button><button id="addRowButton" class="button button-primary" hidden>Add row</button></div></div>
+        <section id="auditPanel" class="audit-panel" aria-labelledby="auditTitle" hidden>
+          <div class="audit-heading">
+            <div><span class="eyebrow">ADMIN</span><h2 id="auditTitle">Change history</h2><p>Genesys Cloud real-time audit events for this table, up to 14 days.</p></div>
+            <div class="audit-controls">
+              <label for="auditRange">Period</label>
+              <select id="auditRange" class="input"><option value="1">Last day</option><option value="7">Last 7 days</option><option value="14" selected>Last 14 days</option></select>
+              <button id="refreshAuditButton" class="button button-secondary" type="button">Refresh history</button>
+              <button id="closeAuditButton" class="icon-button" type="button" aria-label="Close change history">×</button>
+            </div>
+          </div>
+          <p id="auditStatus" class="audit-status" role="status"></p>
+          <div id="auditList" class="audit-list"></div>
+          <button id="loadMoreAuditButton" class="button button-secondary load-more" type="button" hidden>Show more changes</button>
+        </section>
         <div class="table-tools"><div><strong id="rowCount">0 rows</strong><span id="tableHint" class="hint"></span></div><label><span class="sr-only">Search rows</span><input id="rowSearch" class="input" type="search" placeholder="Search rows…"></label></div>
         <div id="rowTableWrap" class="row-table-wrap"><table id="rowTable"><thead></thead><tbody></tbody></table></div>
         <p id="rowsEmpty" class="rows-empty" hidden>No rows match your search.</p>
@@ -54,7 +68,7 @@
     </main>
   </div>
 
-  <dialog id="rowDialog" class="row-dialog">
+  <dialog id="rowDialog" class="row-dialog" aria-labelledby="dialogTitle">
     <form id="rowForm" novalidate>
       <div class="dialog-heading"><div><span class="eyebrow">DATA TABLE ROW</span><h2 id="dialogTitle"></h2></div><button id="closeDialogButton" type="button" class="icon-button" aria-label="Close">×</button></div>
       <div id="rowFields" class="row-fields"></div>
