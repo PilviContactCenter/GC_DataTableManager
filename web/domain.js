@@ -22,12 +22,12 @@ export function parseRow(schema, values, existing = null) {
     if (name === 'key' && existing) continue;
     const type = name === 'key' ? 'string' : properties[name]?.type || 'string';
     const raw = values[name];
-    if (type === 'boolean') {
-      row[name] = Boolean(raw);
-      continue;
-    }
     if (raw === undefined) {
       if (!existing && (name === 'key' || required.has(name))) errors.push(`${name} is required.`);
+      continue;
+    }
+    if (type === 'boolean') {
+      row[name] = Boolean(raw);
       continue;
     }
     const value = String(raw);
