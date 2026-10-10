@@ -1,4 +1,5 @@
 import { roleFromGroups, columnsFor, parseRow } from './domain.js';
+import { validateColumnAccess, userEditableColumns, sameColumnAccess, columnSchemaFingerprint } from './column-access.js';
 import { AUDIT_PAGE_SIZE, createAuditSession, auditSessionQuery, mergeAuditEntries, auditRowKey, auditChanges } from './audit.js';
 
 const $ = id => document.getElementById(id);
@@ -6,6 +7,7 @@ const config = window.APP_CONFIG || {};
 const state = {
   sdk: null, client: null, architect: null, audits: null, users: null, role: null,
   tables: [], table: null, schema: null, rows: [], dialog: null, shown: 100, loadId: 0,
+  columnAccess: null, columnAccessError: '', columnAccessPending: null, columnDialog: null,
   auditEntries: [], auditPage: 0, auditPageCount: 0, auditTotal: 0, auditLoadId: 0,
   auditSession: null, auditPending: null,
   actorNames: new Map(), actorLookupDenied: false
@@ -82,6 +84,7 @@ async function signIn() {
     $('addRowButton').hidden = state.role !== 'admin';
     $('exportButton').hidden = state.role !== 'admin';
     $('historyButton').hidden = state.role !== 'admin';
+    $('columnAccessButton').hidden = state.role !== 'admin';
     await loadTables();
   } catch (error) {
     notice(`Sign-in failed: ${errorMessage(error)}`);
@@ -152,6 +155,11 @@ function clearSelectedTable() {
 
 function clearTableRows() {
   closeRowDialog();
+  closeColumnDialog();
+  state.columnAccess = null;
+  state.columnAccessError = '';
+  state.columnAccessPending = null;
+  $('columnAccessStatus').textContent = '';
   state.schema = null;
   state.rows = [];
   $('rowTable').querySelector('thead').replaceChildren();
@@ -164,6 +172,62 @@ function clearTableRows() {
 
 function setRowControls(ready) {
   for (const id of ['addRowButton', 'exportButton', 'rowSearch', 'loadMoreButton']) $(id).disabled = !ready;
+  $('columnAccessButton').disabled = !ready;
+  $('refreshColumnAccessButton').disabled = !ready || Boolean(state.columnAccessPending);
+}
+
+async function requestColumnAccess(tableId, update) {
+  const token = state.client?.authentications?.['PureCloud OAuth']?.accessToken;
+  if (!token) throw new Error('Sign in again to load column access.');
+  const response = await fetch(`/api/column-access/${encodeURIComponent(tableId)}`, {
+    method: update ? 'PUT' : 'GET', credentials: 'same-origin', cache: 'no-store',
+    headers: { Authorization: `Bearer ${token}`, ...(update ? { 'Content-Type': 'application/json' } : {}) },
+    ...(update ? { body: JSON.stringify(update) } : {})
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || 'Could not load column access.');
+  return validateColumnAccess(body, tableId);
+}
+
+function editableColumns() {
+  return state.columnAccessPending || state.columnAccessError ? [] : userEditableColumns(state.columnAccess, state.schema);
+}
+
+function renderColumnAccess() {
+  const policy = state.columnAccess;
+  $('columnAccessStatus').textContent = state.columnAccessPending ? 'Loading column access…' : state.columnAccessError ?
+    `Column access unavailable. ${state.columnAccessError}` : policy?.schemaChanged ?
+    'Table columns changed. An Admin must review User editable columns.' : !policy?.configured ?
+    'User edits are read-only until an Admin selects editable columns.' :
+    `${editableColumns().length} columns editable by Users in this app.`;
+  $('refreshColumnAccessButton').disabled = !state.schema || Boolean(state.columnAccessPending);
+  $('columnAccessButton').disabled = !state.schema || Boolean(state.columnAccessPending);
+  if (state.schema) renderRows();
+}
+
+async function refreshColumnAccess(context = tableContext()) {
+  if (!isCurrentTable(context) || state.columnDialog) return;
+  const request = { context };
+  state.columnAccessPending = request;
+  state.columnAccessError = '';
+  renderColumnAccess();
+  try {
+    const policy = await requestColumnAccess(context.table.id);
+    if (state.columnAccessPending !== request || !isCurrentTable(context)) return;
+    const fingerprint = await columnSchemaFingerprint(context.schema);
+    if (state.columnAccessPending !== request || !isCurrentTable(context)) return;
+    if (fingerprint !== policy.schemaFingerprint) throw new Error('Table columns changed while loading. Refresh the table to review column access.');
+    state.columnAccess = policy;
+  } catch (error) {
+    if (state.columnAccessPending !== request || !isCurrentTable(context)) return;
+    state.columnAccess = null;
+    state.columnAccessError = errorMessage(error);
+  } finally {
+    if (state.columnAccessPending === request && isCurrentTable(context)) {
+      state.columnAccessPending = null;
+      renderColumnAccess();
+    }
+  }
 }
 
 function tableContext() {
@@ -198,6 +262,8 @@ async function selectTable(table) {
     setRowControls(true);
     $('tableHint').textContent = '';
     renderRows();
+    await refreshColumnAccess(tableContext());
+    if (loadId !== state.loadId) return;
     if (!$('auditPanel').hidden && state.role === 'admin') await loadAuditHistory(1);
   } catch (error) {
     if (loadId !== state.loadId) return;
@@ -241,6 +307,8 @@ function renderRows() {
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.textContent = 'Edit';
+    edit.disabled = state.role !== 'admin' && editableColumns().length === 0;
+    if (edit.disabled) edit.title = 'No columns are currently editable by Users in this app.';
     edit.addEventListener('click', () => openRowDialog(row, context));
     actions.append(edit);
     if (state.role === 'admin') {
@@ -453,6 +521,115 @@ function closeRowDialog() {
   if ($('rowDialog').open) $('rowDialog').close();
 }
 
+function closeColumnDialog() {
+  state.columnDialog = null;
+  if ($('columnAccessDialog').open) $('columnAccessDialog').close();
+}
+
+function isCurrentColumnDialog(dialog) {
+  return state.role === 'admin' && state.columnDialog === dialog && $('columnAccessDialog').open && isCurrentTable(dialog);
+}
+
+function renderColumnChoices(dialog) {
+  const fields = $('columnAccessFields');
+  fields.replaceChildren();
+  for (const [name, definition] of Object.entries(dialog.schema.properties || {})) {
+    if (name === 'key') continue;
+    const label = document.createElement('label');
+    label.className = 'column-choice';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.dataset.column = name;
+    checkbox.id = `column-access-${name}`;
+    checkbox.checked = dialog.policy.editableColumns.includes(name);
+    const title = document.createElement('span');
+    title.textContent = definition.title || name;
+    const identifier = document.createElement('small');
+    identifier.textContent = `Column ID: ${name}`;
+    label.htmlFor = checkbox.id;
+    label.append(checkbox, title, identifier);
+    fields.append(label);
+  }
+}
+
+async function loadColumnDialog(dialog) {
+  if (!isCurrentColumnDialog(dialog) || dialog.loading || dialog.saving) return;
+  dialog.loading = true;
+  dialog.policy = null;
+  $('saveColumnAccessButton').disabled = true;
+  $('reloadColumnAccessButton').disabled = true;
+  $('columnAccessFields').replaceChildren();
+  $('columnAccessError').textContent = 'Loading column access…';
+  try {
+    const policy = await requestColumnAccess(dialog.table.id);
+    if (!isCurrentColumnDialog(dialog)) return;
+    const fingerprint = await columnSchemaFingerprint(dialog.schema);
+    if (!isCurrentColumnDialog(dialog)) return;
+    if (fingerprint !== policy.schemaFingerprint) throw new Error('Table columns changed. Cancel and refresh the table before selecting columns.');
+    dialog.policy = policy;
+    state.columnAccess = policy;
+    state.columnAccessError = '';
+    renderColumnChoices(dialog);
+    renderColumnAccess();
+    $('columnAccessError').textContent = policy.schemaChanged ? 'Table columns changed. Review the selection and save to confirm.' : '';
+  } catch (error) {
+    if (isCurrentColumnDialog(dialog)) $('columnAccessError').textContent = errorMessage(error);
+  } finally {
+    dialog.loading = false;
+    if (isCurrentColumnDialog(dialog)) {
+      $('saveColumnAccessButton').disabled = !dialog.policy;
+      $('reloadColumnAccessButton').disabled = false;
+    }
+  }
+}
+
+async function openColumnDialog() {
+  const context = tableContext();
+  if (state.role !== 'admin' || !isCurrentTable(context) || state.columnAccessPending) return;
+  closeColumnDialog();
+  const dialog = { ...context, policy: null, loading: false, saving: false };
+  state.columnDialog = dialog;
+  $('columnAccessTitle').textContent = `User editable columns — ${context.table.name || context.table.id}`;
+  $('saveColumnAccessButton').textContent = 'Save selection';
+  $('columnAccessDialog').showModal();
+  await loadColumnDialog(dialog);
+}
+
+async function saveColumnAccess(event) {
+  event.preventDefault();
+  const dialog = state.columnDialog;
+  if (!isCurrentColumnDialog(dialog) || !dialog.policy || dialog.loading || dialog.saving) return;
+  const editableColumns = Array.from($('columnAccessFields').querySelectorAll('input')).filter(input => input.checked).map(input => input.dataset.column);
+  // DOM tampering cannot add a column outside this dialog's captured schema.
+  if (editableColumns.some(name => name === 'key' || !Object.hasOwn(dialog.schema.properties || {}, name))) return;
+  dialog.saving = true;
+  const button = $('saveColumnAccessButton');
+  setBusy(button, true, 'Saving…');
+  $('reloadColumnAccessButton').disabled = true;
+  for (const input of $('columnAccessFields').querySelectorAll('input')) input.disabled = true;
+  $('columnAccessError').textContent = '';
+  try {
+    const policy = await requestColumnAccess(dialog.table.id, {
+      revision: dialog.policy.revision, editableColumns, schemaFingerprint: dialog.policy.schemaFingerprint
+    });
+    if (!isCurrentColumnDialog(dialog)) return;
+    state.columnAccess = policy;
+    state.columnAccessError = '';
+    renderColumnAccess();
+    closeColumnDialog();
+    notice('User editable columns saved for this app.', true);
+  } catch (error) {
+    if (isCurrentColumnDialog(dialog)) $('columnAccessError').textContent = `${errorMessage(error)} Your selection has been kept. Refresh policy to review the latest selection.`;
+  } finally {
+    dialog.saving = false;
+    if (isCurrentColumnDialog(dialog)) {
+      setBusy(button, false);
+      $('reloadColumnAccessButton').disabled = false;
+      for (const input of $('columnAccessFields').querySelectorAll('input')) input.disabled = false;
+    }
+  }
+}
+
 function sameRow(left, right) {
   if (left === right) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
@@ -463,8 +640,11 @@ function sameRow(left, right) {
 function openRowDialog(row = null, context = tableContext()) {
   if (!isCurrentTable(context) || (row && !state.rows.includes(row))) return;
   if (!row && state.role !== 'admin') return;
+  const allowed = state.role === 'admin' ? null : editableColumns();
+  if (allowed && !allowed.length) return;
   closeRowDialog();
-  state.dialog = { ...context, row: row ? structuredClone(row) : null, saving: false };
+  state.dialog = { ...context, row: row ? structuredClone(row) : null, saving: false,
+    role: state.role, allowed, policy: allowed ? structuredClone(state.columnAccess) : null };
   $('dialogTitle').textContent = row ? `Edit ${row.key || 'row'}` : 'Add row';
   $('saveRowButton').textContent = row ? 'Save changes' : 'Create row';
   $('saveRowButton').disabled = false;
@@ -485,9 +665,12 @@ function openRowDialog(row = null, context = tableContext()) {
     input.dataset.field = name;
     input.name = name;
     label.htmlFor = input.id;
+    const locked = name === 'key' && row || allowed && !allowed.includes(name);
+    if (locked && allowed) label.textContent += ' (locked by column access)';
     if (type === 'boolean') {
       input.type = 'checkbox';
       input.checked = Boolean(value);
+      input.disabled = Boolean(locked);
       wrapper.append(input, label);
     } else {
       input.type = type === 'integer' || type === 'number' ? 'number' : 'text';
@@ -496,7 +679,7 @@ function openRowDialog(row = null, context = tableContext()) {
       input.className = 'input';
       input.value = value ?? '';
       input.required = name === 'key' || Boolean(state.schema.required?.includes(name));
-      if (name === 'key' && row) input.readOnly = true;
+      input.readOnly = Boolean(locked);
       wrapper.append(label, input);
     }
     if (definition.description) {
@@ -517,6 +700,9 @@ async function saveRow(event) {
   if (!form.reportValidity()) return;
   const values = {};
   for (const input of form.querySelectorAll('[data-field]')) {
+    // Preserve all forbidden properties, including optional fields absent in
+    // the original row, even if a caller changes locked controls in the DOM.
+    if (dialog.allowed && !dialog.allowed.includes(input.dataset.field)) continue;
     values[input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
   }
   const { row, errors } = parseRow(dialog.schema, values, dialog.row);
@@ -529,10 +715,21 @@ async function saveRow(event) {
   dialog.saving = true;
   setBusy(button, true, 'Saving…');
   try {
+    if (state.role !== dialog.role) throw new Error('Your app role changed. Cancel and reopen this row.');
     if (dialog.row) {
+      if (dialog.allowed) {
+        const policy = await requestColumnAccess(dialog.table.id);
+        if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
+        if (state.role !== dialog.role || !sameColumnAccess(dialog.policy, policy) || !policy.configured || !userEditableColumns(policy, dialog.schema).length) {
+          throw new Error('Column access changed since you opened this row. Your draft has been kept. Cancel and refresh column access before editing again.');
+        }
+      }
+      // Keep the row freshness read adjacent to the SDK write. Policy checks
+      // can take several requests; a row changed during them must be detected.
       const current = await state.architect.getFlowsDatatableRow(dialog.table.id, dialog.row.key, { showbrief: false });
       if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
       if (!sameRow(current, dialog.row)) throw new Error('This row changed since you opened it. Your draft has been kept. Cancel and refresh the table before editing again.');
+      if (state.role !== dialog.role) throw new Error('Your app role changed. Cancel and reopen this row.');
       await state.architect.putFlowsDatatableRow(dialog.table.id, dialog.row.key, { body: row });
     } else await state.architect.postFlowsDatatableRows(dialog.table.id, row);
     if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
@@ -587,6 +784,14 @@ function init() {
   $('rowSearch').addEventListener('input', () => { state.shown = 100; renderRows(); });
   $('refreshRowsButton').addEventListener('click', () => state.table && selectTable(state.table));
   $('historyButton').addEventListener('click', toggleAuditHistory);
+  $('columnAccessButton').addEventListener('click', openColumnDialog);
+  $('refreshColumnAccessButton').addEventListener('click', () => refreshColumnAccess());
+  $('columnAccessForm').addEventListener('submit', saveColumnAccess);
+  $('reloadColumnAccessButton').addEventListener('click', () => state.columnDialog && loadColumnDialog(state.columnDialog));
+  $('closeColumnAccessButton').addEventListener('click', closeColumnDialog);
+  $('cancelColumnAccessButton').addEventListener('click', closeColumnDialog);
+  $('columnAccessDialog').addEventListener('cancel', event => { event.preventDefault(); closeColumnDialog(); });
+  $('columnAccessDialog').addEventListener('close', () => { if (!$('columnAccessDialog').open) state.columnDialog = null; });
   $('closeAuditButton').addEventListener('click', closeAuditHistory);
   $('refreshAuditButton').addEventListener('click', () => loadAuditHistory(1));
   $('auditRange').addEventListener('change', () => loadAuditHistory(1));

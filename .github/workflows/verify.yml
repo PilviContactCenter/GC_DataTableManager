@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Run browser regression tests
+      - name: Run browser and policy regression tests
         run: node --test tests/*.mjs
       - name: Check shell syntax
         run: bash -n tests/test_container.sh && sh -n docker/validate-config.sh

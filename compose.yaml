@@ -1,4 +1,25 @@
+name: datatablemanager-web
+
 services:
+  policy:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      GENESYS_REGION: ${GENESYS_REGION:?Set GENESYS_REGION in .env}
+      GENESYS_ADMIN_GROUP_ID: ${GENESYS_ADMIN_GROUP_ID:?Set GENESYS_ADMIN_GROUP_ID in .env}
+      GENESYS_USER_GROUP_ID: ${GENESYS_USER_GROUP_ID:?Set GENESYS_USER_GROUP_ID in .env}
+      PORT: 3000
+      POLICY_PATH: /data/column-access.json
+    volumes:
+      - column-access:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
   web:
     build: .
     restart: unless-stopped
@@ -15,3 +36,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+volumes:
+  column-access:
+    name: datatablemanager-web-column-access
