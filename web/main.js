@@ -1,5 +1,5 @@
 import { roleFromGroups, columnsFor, parseRow } from './domain.js';
-import { AUDIT_PAGE_SIZE, auditQuery, auditRowKey, auditChanges } from './audit.js';
+import { AUDIT_PAGE_SIZE, createAuditSession, auditSessionQuery, mergeAuditEntries, auditRowKey, auditChanges } from './audit.js';
 
 const $ = id => document.getElementById(id);
 const config = window.APP_CONFIG || {};
@@ -7,6 +7,7 @@ const state = {
   sdk: null, client: null, architect: null, audits: null, users: null, role: null,
   tables: [], table: null, schema: null, rows: [], editRow: null, shown: 100, loadId: 0,
   auditEntries: [], auditPage: 0, auditPageCount: 0, auditTotal: 0, auditLoadId: 0,
+  auditSession: null, auditPending: null,
   actorNames: new Map(), actorLookupDenied: false
 };
 
@@ -228,6 +229,8 @@ function renderRows() {
 
 function closeAuditHistory() {
   state.auditLoadId++;
+  state.auditSession = null;
+  state.auditPending = null;
   state.auditEntries = [];
   state.auditPage = 0;
   state.auditPageCount = 0;
@@ -237,6 +240,21 @@ function closeAuditHistory() {
   $('auditList').replaceChildren();
   $('auditStatus').textContent = '';
   $('loadMoreAuditButton').hidden = true;
+  setAuditBusy(false);
+}
+
+function setAuditBusy(busy, pageNumber) {
+  $('auditRange').disabled = busy;
+  $('refreshAuditButton').disabled = busy;
+  $('loadMoreAuditButton').disabled = busy;
+  $('refreshAuditButton').textContent = busy && pageNumber === 1 ? 'Loading…' : 'Refresh history';
+  $('loadMoreAuditButton').textContent = busy && pageNumber > 1 ? 'Loading…' : 'Show more changes';
+}
+
+function isCurrentAuditRequest(request) {
+  return state.auditPending === request && state.auditSession === request.session &&
+    request.loadId === state.auditLoadId && state.table?.id === request.session.tableId &&
+    Number($('auditRange').value) === request.session.days && !$('auditPanel').hidden;
 }
 
 async function toggleAuditHistory() {
@@ -252,25 +270,45 @@ async function toggleAuditHistory() {
 
 async function loadAuditHistory(pageNumber = 1) {
   if (state.role !== 'admin' || !state.table || $('auditPanel').hidden) return;
-  const loadId = ++state.auditLoadId;
   const tableId = state.table.id;
-  const button = pageNumber === 1 ? $('refreshAuditButton') : $('loadMoreAuditButton');
-  setBusy(button, true, 'Loading…');
+  const days = Number($('auditRange').value);
+  if (pageNumber === 1) {
+    // Controls are disabled while loading. A range/table change still replaces
+    // the session if triggered programmatically or by another table refresh.
+    if (state.auditPending && state.auditSession?.tableId === tableId && state.auditSession.days === days) return;
+    state.auditSession = createAuditSession(tableId, days, new Date());
+    state.auditEntries = [];
+    state.auditPage = 0;
+    state.auditPageCount = 0;
+    state.auditTotal = 0;
+    $('auditList').replaceChildren();
+    $('loadMoreAuditButton').hidden = true;
+  } else if (state.auditPending || !state.auditSession || state.auditSession.tableId !== tableId ||
+    state.auditSession.days !== days || pageNumber !== state.auditPage + 1 || pageNumber > state.auditPageCount) {
+    return;
+  }
+  const request = { loadId: ++state.auditLoadId, session: state.auditSession };
+  state.auditPending = request;
+  setAuditBusy(true, pageNumber);
   $('auditStatus').textContent = 'Loading change history…';
   try {
-    const query = auditQuery(tableId, Number($('auditRange').value), pageNumber);
+    const query = auditSessionQuery(request.session, pageNumber);
     const result = await state.audits.postAuditsQueryRealtime(query);
-    if (loadId !== state.auditLoadId || tableId !== state.table?.id) return;
-    state.auditEntries = pageNumber === 1 ? (result.entities || []) : [...state.auditEntries, ...(result.entities || [])];
+    if (!isCurrentAuditRequest(request)) return;
+    state.auditEntries = mergeAuditEntries(state.auditEntries, result.entities || []);
     state.auditPage = pageNumber;
     state.auditPageCount = result.pageCount ?? Math.ceil((result.total ?? state.auditEntries.length) / AUDIT_PAGE_SIZE);
     state.auditTotal = result.total ?? state.auditEntries.length;
     renderAuditHistory();
-    void resolveAuditActors(loadId);
+    void resolveAuditActors(request.loadId);
   } catch (error) {
-    if (loadId === state.auditLoadId) $('auditStatus').textContent = `Could not load change history: ${errorMessage(error)}`;
+    if (isCurrentAuditRequest(request)) $('auditStatus').textContent = `Could not load change history: ${errorMessage(error)}`;
   } finally {
-    setBusy(button, false);
+    // An older request must not enable controls owned by a newer session.
+    if (state.auditPending === request) {
+      state.auditPending = null;
+      setAuditBusy(false);
+    }
   }
 }
 
