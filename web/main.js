@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const config = window.APP_CONFIG || {};
 const state = {
   sdk: null, client: null, architect: null, audits: null, users: null, role: null,
-  tables: [], table: null, schema: null, rows: [], editRow: null, shown: 100, loadId: 0,
+  tables: [], table: null, schema: null, rows: [], dialog: null, shown: 100, loadId: 0,
   auditEntries: [], auditPage: 0, auditPageCount: 0, auditTotal: 0, auditLoadId: 0,
   auditSession: null, auditPending: null,
   actorNames: new Map(), actorLookupDenied: false
@@ -87,13 +87,15 @@ async function signIn() {
 
 async function allPages(loadPage, pageSize = 100) {
   const entries = [];
-  for (let pageNumber = 1; pageNumber <= 100; pageNumber++) {
+  const maxPages = 1000;
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
     const result = await loadPage(pageNumber, pageSize);
     const batch = result?.entities || [];
     entries.push(...batch);
-    if (batch.length < pageSize || (result.pageCount && pageNumber >= result.pageCount)) break;
+    const hasMore = result.nextUri || (result.pageCount ? pageNumber < result.pageCount : batch.length >= pageSize);
+    if (!hasMore) return entries;
   }
-  return entries;
+  throw new Error(`The table exceeds the ${maxPages}-page loading limit. No partial results were loaded.`);
 }
 
 async function loadTables() {
@@ -134,20 +136,44 @@ function renderTables() {
 }
 
 function clearSelectedTable() {
+  state.loadId++;
   closeAuditHistory();
   state.table = null;
-  state.schema = null;
-  state.rows = [];
+  clearTableRows();
   $('noTable').hidden = false;
   $('tableView').hidden = true;
   renderTables();
+}
+
+function clearTableRows() {
+  closeRowDialog();
+  state.schema = null;
+  state.rows = [];
+  $('rowTable').querySelector('thead').replaceChildren();
+  $('rowTable').querySelector('tbody').replaceChildren();
+  $('rowCount').textContent = '0 rows';
+  $('rowsEmpty').hidden = true;
+  $('loadMoreButton').hidden = true;
+  setRowControls(false);
+}
+
+function setRowControls(ready) {
+  for (const id of ['addRowButton', 'exportButton', 'rowSearch', 'loadMoreButton']) $(id).disabled = !ready;
+}
+
+function tableContext() {
+  return { table: state.table, schema: state.schema, loadId: state.loadId };
+}
+
+function isCurrentTable(context) {
+  return Boolean(context?.schema && context.loadId === state.loadId && context.table?.id === state.table?.id && context.schema === state.schema);
 }
 
 async function selectTable(table) {
   const loadId = ++state.loadId;
   if (state.table?.id !== table.id) closeAuditHistory();
   state.table = table;
-  state.rows = [];
+  clearTableRows();
   state.shown = 100;
   $('rowSearch').value = '';
   $('noTable').hidden = true;
@@ -164,6 +190,7 @@ async function selectTable(table) {
     if (loadId !== state.loadId) return;
     state.schema = details.schema || { properties: {} };
     state.rows = rows;
+    setRowControls(true);
     $('tableHint').textContent = '';
     renderRows();
     if (!$('auditPanel').hidden && state.role === 'admin') await loadAuditHistory(1);
@@ -175,6 +202,8 @@ async function selectTable(table) {
 }
 
 function renderRows() {
+  if (!state.schema) return;
+  const context = tableContext();
   const query = $('rowSearch').value.trim().toLowerCase();
   const filtered = state.rows.filter(row => !query || Object.values(row).some(value => String(value ?? '').toLowerCase().includes(query)));
   const columns = columnsFor(state.schema, state.rows);
@@ -207,14 +236,14 @@ function renderRows() {
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.textContent = 'Edit';
-    edit.addEventListener('click', () => openRowDialog(row));
+    edit.addEventListener('click', () => openRowDialog(row, context));
     actions.append(edit);
     if (state.role === 'admin') {
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = 'Delete';
       remove.className = 'delete';
-      remove.addEventListener('click', () => deleteRow(row));
+      remove.addEventListener('click', () => deleteRow(row, context));
       actions.append(remove);
     }
     actionCell.append(actions);
@@ -414,12 +443,26 @@ async function resolveAuditActors(loadId) {
   }
 }
 
-function openRowDialog(row = null) {
-  if (!state.table || !state.schema) return;
+function closeRowDialog() {
+  state.dialog = null;
+  if ($('rowDialog').open) $('rowDialog').close();
+}
+
+function sameRow(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && sameRow(left[key], right[key]));
+}
+
+function openRowDialog(row = null, context = tableContext()) {
+  if (!isCurrentTable(context) || (row && !state.rows.includes(row))) return;
   if (!row && state.role !== 'admin') return;
-  state.editRow = row;
+  closeRowDialog();
+  state.dialog = { ...context, row: row ? structuredClone(row) : null, saving: false };
   $('dialogTitle').textContent = row ? `Edit ${row.key || 'row'}` : 'Add row';
   $('saveRowButton').textContent = row ? 'Save changes' : 'Create row';
+  $('saveRowButton').disabled = false;
   $('formError').hidden = true;
   const fields = $('rowFields');
   fields.replaceChildren();
@@ -462,47 +505,64 @@ function openRowDialog(row = null) {
 
 async function saveRow(event) {
   event.preventDefault();
+  const dialog = state.dialog;
+  if (!dialog || dialog.saving || !$('rowDialog').open || !isCurrentTable(dialog)) return;
   const form = $('rowForm');
   if (!form.reportValidity()) return;
   const values = {};
   for (const input of form.querySelectorAll('[data-field]')) {
     values[input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
   }
-  const { row, errors } = parseRow(state.schema, values, state.editRow);
+  const { row, errors } = parseRow(dialog.schema, values, dialog.row);
   if (errors.length) {
     $('formError').textContent = errors.join(' ');
     $('formError').hidden = false;
     return;
   }
   const button = $('saveRowButton');
+  dialog.saving = true;
   setBusy(button, true, 'Saving…');
   try {
-    if (state.editRow) await state.architect.putFlowsDatatableRow(state.table.id, state.editRow.key, { body: row });
-    else await state.architect.postFlowsDatatableRows(state.table.id, row);
-    $('rowDialog').close();
-    notice(state.editRow ? 'Row updated.' : 'Row created.', true);
-    await selectTable(state.table);
+    if (dialog.row) {
+      const current = await state.architect.getFlowsDatatableRow(dialog.table.id, dialog.row.key, { showbrief: false });
+      if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
+      if (!sameRow(current, dialog.row)) throw new Error('This row changed since you opened it. Your draft has been kept. Cancel and refresh the table before editing again.');
+      await state.architect.putFlowsDatatableRow(dialog.table.id, dialog.row.key, { body: row });
+    } else await state.architect.postFlowsDatatableRows(dialog.table.id, row);
+    if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
+    closeRowDialog();
+    notice(dialog.row ? 'Row updated.' : 'Row created.', true);
+    await selectTable(dialog.table);
   } catch (error) {
+    if (state.dialog !== dialog || !isCurrentTable(dialog)) return;
     $('formError').textContent = errorMessage(error);
     $('formError').hidden = false;
   } finally {
-    setBusy(button, false);
+    dialog.saving = false;
+    if (state.dialog === dialog) setBusy(button, false);
   }
 }
 
-async function deleteRow(row) {
-  if (state.role !== 'admin' || !confirm(`Delete row "${row.key}"? This cannot be undone.`)) return;
+async function deleteRow(row, context = tableContext()) {
+  if (state.role !== 'admin' || !isCurrentTable(context) || !state.rows.includes(row)) return;
+  const key = row.key;
+  const original = structuredClone(row);
+  if (!confirm(`Delete row "${key}"? This cannot be undone.`) || !isCurrentTable(context)) return;
   try {
-    await state.architect.deleteFlowsDatatableRow(state.table.id, row.key);
+    const current = await state.architect.getFlowsDatatableRow(context.table.id, key, { showbrief: false });
+    if (!isCurrentTable(context)) return;
+    if (!sameRow(current, original)) throw new Error('This row changed since it was loaded. Refresh the table before deleting it.');
+    await state.architect.deleteFlowsDatatableRow(context.table.id, key);
+    if (!isCurrentTable(context)) return;
     notice('Row deleted.', true);
-    await selectTable(state.table);
+    if (!state.dialog) await selectTable(context.table);
   } catch (error) {
-    notice(`Could not delete row: ${errorMessage(error)}`);
+    if (isCurrentTable(context)) notice(`Could not delete row: ${errorMessage(error)}`);
   }
 }
 
 function exportRows() {
-  if (state.role !== 'admin' || !state.table) return;
+  if (state.role !== 'admin' || !isCurrentTable(tableContext())) return;
   const blob = new Blob([JSON.stringify(state.rows, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -528,8 +588,10 @@ function init() {
   $('addRowButton').addEventListener('click', () => openRowDialog());
   $('exportButton').addEventListener('click', exportRows);
   $('loadMoreButton').addEventListener('click', () => { state.shown += 100; renderRows(); });
-  $('closeDialogButton').addEventListener('click', () => $('rowDialog').close());
-  $('cancelDialogButton').addEventListener('click', () => $('rowDialog').close());
+  $('closeDialogButton').addEventListener('click', closeRowDialog);
+  $('cancelDialogButton').addEventListener('click', closeRowDialog);
+  $('rowDialog').addEventListener('cancel', event => { event.preventDefault(); closeRowDialog(); });
+  $('rowDialog').addEventListener('close', () => { if (!$('rowDialog').open) state.dialog = null; });
   $('rowForm').addEventListener('submit', saveRow);
 
   if (!hasConfig()) {
