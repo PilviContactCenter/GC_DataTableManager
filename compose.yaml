@@ -23,9 +23,6 @@ services:
   web:
     build: .
     restart: unless-stopped
-    depends_on:
-      policy:
-        condition: service_healthy
     environment:
       GENESYS_CLIENT_ID: ${GENESYS_CLIENT_ID:?Set GENESYS_CLIENT_ID in .env}
       GENESYS_REGION: ${GENESYS_REGION:?Set GENESYS_REGION in .env}

@@ -76,9 +76,6 @@ assert.deepEqual(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')), { status:
 NODE
 }
 
-policy_name="$name_prefix-policy"
-start_policy "$policy_name"
-wait_policy "$policy_name"
 valid_name="$name_prefix-valid"
 start_container "$valid_name" "${public_env[@]}" --publish 127.0.0.1::80
 port="$(docker port "$valid_name" 80/tcp)"
@@ -123,6 +120,21 @@ NODE
 printf 'Valid configuration: rendered JavaScript, HTML and module MIME checks passed.\n'
 
 policy_route="$base_url/api/column-access/cccccccc-cccc-cccc-cccc-cccccccccccc"
+status="$(curl --silent --show-error --max-time 5 "$policy_route" -o /dev/null -w '%{http_code}')"
+[[ "$status" == 502 ]] || fail "Absent policy service returned $status instead of 502."
+curl --fail --silent --show-error --max-time 5 "$base_url/" -o /dev/null
+printf 'Policy outage: Nginx starts and serves the application without policy storage.\n'
+
+policy_name="$name_prefix-policy"
+start_policy "$policy_name"
+wait_policy "$policy_name"
+proxy_ready=false
+for ((attempt = 0; attempt < 80; attempt++)); do
+  status="$(curl --silent --max-time 2 "$policy_route" -o /dev/null -w '%{http_code}' || true)"
+  if [[ "$status" == 401 ]]; then proxy_ready=true; break; fi
+  sleep 0.25
+done
+[[ "$proxy_ready" == true ]] || fail 'Nginx did not connect when the policy service became available.'
 for method in GET PUT; do
   status="$(curl --silent --show-error --max-time 5 -X "$method" -D "$temp_dir/policy.headers" "$policy_route" -o "$temp_dir/policy-error.json" -w '%{http_code}')"
   [[ "$status" == 401 ]] || fail "Unauthenticated policy $method returned $status instead of 401."

@@ -43,8 +43,11 @@ Copy `.env.example` to `.env`, then set the OAuth client ID, region key, the
 two group IDs, and your public domain. These IDs are configuration values,
 not secrets. The web container generates `config.js` from them at startup.
 Compose also starts an internal `policy` service, with no published host port,
-and waits for its storage health check before starting the web service. Nginx
-forwards `/api/` requests, including the user's bearer token, to that service.
+and a storage health check. The web service starts independently so Admins
+can use table operations while the policy service is unavailable. Nginx
+forwards `/api/` requests, including the user's bearer token, to that service
+and reconnects when its container is recreated. During a policy outage,
+User editing is blocked and saving column selections is unavailable.
 
 For a local preview:
 
@@ -88,7 +91,10 @@ permissions. The row key cannot be selected as an editable column.
 The policy API checks the signed-in user's Genesys groups and the current table
 schema. Only an Admin can save settings; both groups can read them. Changes use
 revisions so an older Admin draft cannot overwrite a newer saved selection.
-The app checks permissions again before saving a User row edit. If settings
+The app reloads permissions before the final row conflict check when saving
+a User row edit. These separate policy and Genesys row requests are not
+atomic: a permission change after the policy check can still race the row
+write. If settings
 cannot be loaded, User editing is blocked. If the table schema changes, an
 Admin must review **User editable columns** and save again to confirm the
 selection. A changed permission revision or schema during an edit keeps the
